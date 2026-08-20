@@ -1,0 +1,1254 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>POP Generator</title>
+
+  <!-- Tailwind via CDN agar tidak perlu npm/build -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body, #root {
+      min-height: 100%;
+      margin: 0;
+    }
+    body {
+      min-height: 100vh;
+      background: #f8fafc;
+      -webkit-tap-highlight-color: transparent;
+    }
+    * { box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="module">
+import React, { useState, useEffect, useRef, useCallback } from 'https://esm.sh/react@18.3.1';
+import { removeBackground } from 'https://esm.sh/@imgly/background-removal@1.4.3';
+import { Download, Wand2, MapPin, Move, ZoomIn, RefreshCw, Upload, Image as ImageIcon, SlidersHorizontal, Loader2, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Maximize, Minimize, SplitSquareHorizontal, Square, AlignLeft, AlignCenter, AlignRight, AlignJustify, GripHorizontal, X } from 'https://esm.sh/lucide-react@0.468.0';
+// LOGICAL SIZE: Standar A3 Ratio
+const LOGICAL_WIDTH = 1080;
+const LOGICAL_HEIGHT = 1528;
+// RENDER SCALE: 4x Multiplier untuk Kualitas 8K
+const RENDER_SCALE = 4;
+const getGeminiApiKey = () => {
+    let key = sessionStorage.getItem('GEMINI_API_KEY') || '';
+    if (!key) {
+        key = window.prompt(
+            'Masukkan Gemini API Key untuk menggunakan fitur AI.\n\n' +
+            'Key hanya disimpan sementara di tab browser ini (sessionStorage), bukan di file website.'
+        ) || '';
+        if (key)
+            sessionStorage.setItem('GEMINI_API_KEY', key.trim());
+    }
+    return key.trim();
+};
+const fetchWithRetry = async (url, options, retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+        try {
+            let requestUrl = url;
+            let requestOptions = options;
+            // Mode Android-friendly: Gemini dipanggil langsung dari browser,
+            // sehingga tidak membutuhkan folder netlify/functions.
+            if (url.includes('/.netlify/functions/gemini')) {
+                const request = JSON.parse(options?.body || '{}');
+                const apiKey = getGeminiApiKey();
+                if (!apiKey)
+                    throw new Error('Gemini API Key belum diisi.');
+                const model = request.type === 'image'
+                    ? 'gemini-2.5-flash-image-preview'
+                    : 'gemini-2.5-flash';
+                requestUrl =
+                    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+                requestOptions = {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(request.payload)
+                };
+            }
+            const response = await fetch(requestUrl, requestOptions);
+            if (!response.ok) {
+                const detail = await response.text().catch(() => '');
+                throw new Error(`HTTP ${response.status}: ${detail || response.statusText}`);
+            }
+            return await response.json();
+        }
+        catch (err) {
+            if (i === retries - 1)
+                throw err;
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
+        }
+    }
+};
+// TEMPLATE STANDAR (1 ITEM)
+const DEFAULT_TEMPLATES = {
+    BJR: { Fishery: '1zohUtnK_yLmrSpV5jSQn4QEwHCSuno3x', 'Fruit/Veg': '1yMU4dPvISjJn3I3iN7ZnnGS-boP1gGck', Meat: '1vIwoPiLwt2Qu1ojhboqQponlR8tnBc64', Poultry: '19oTASevf2H-1wNX_hj6cqjMZW5K_6oU4' },
+    CMS: { Fishery: '1em9HTsCU60a-2WlJqiS55mGH4avrYf9u', 'Fruit/Veg': '1TK-AuMOSEB0nlCZjCHQo9ekfdN1WQptl', Meat: '1PZdfM9sPTR-BN-UTUVbRRvTUrGoK6YkR', Poultry: '1CaAYwGExOguxDSd1HEEA_aDvN8vHZvCR' },
+    GCW: { Fishery: '1nyVdtZUerp-_CwnTOot325lZJwzRBv5b', 'Fruit/Veg': '11rpl4z7-RFwZBDWGS58Z4hjaq_5i7_nF', Meat: '1zH4uKrbGX9-g5R6FutALJFfaxazlJqX_', Poultry: '1btbp1VcX15g3E-Wg9bNoUapvgtLLMEcu' },
+    GRT: { Fishery: '1OGKIJIbPBcaEgcPrW5AKuZnkTDFR7Sce', 'Fruit/Veg': '1M1eNdwFzCRTVevsQ3_BQB78ACI8aeDqK', Meat: '1mRoQHachMBNLsl0zlHqe7K2zrJNn_TU2', Poultry: '1D-uDfNYBdS30LSB7w0b5G4Pikz1pgnrG' },
+    MBT: { Fishery: '1_CMaFchoDC6yJey5-P4GNtlhU1QE51HN', 'Fruit/Veg': '16JL2It1am3wDShyN_qxIWlyXDHMbHI0X', Meat: '1psBvKkPY8xAUkSnxadoRtrWZa2xda7ZR', Poultry: '1q7pOMZJyblYcpA4c5ramgOOkuJLmVWUy' },
+    TSK: { Fishery: '1iJlxbJ8_LeqAr1rqOmJmuV3OOOCuD4-p', 'Fruit/Veg': '1JLW57JbSbhv0Iqbr2x0x7diODysSlSaI', Meat: '1uwaWVPp3Zd3ydnO-Kk3xByPnqYQZMMV5', Poultry: '1Cay--HFoCYSKBhc9HrI2bol6KGt8U8bE' },
+    YCN: { Fishery: '13R8quksIopEBINJB6gPWGo_UMsk636k_', 'Fruit/Veg': '1C-vJoh4_Pw4CkS4HwdSJ7X2kNmIoJJR7', Meat: '11O7xMw6204E8XrXstpn7jHoZCATeQbZ4', Poultry: '1B3uIoKH4gZDQJAL8lO_5ZATE5GZkmp8x' },
+    YMJ: { Fishery: '18qB0osPvNXB4iNEOx4NitApKPjZUNaX9', 'Fruit/Veg': '1NWIOlr2vOtSsm1vO_hf54AWUqkQLRsRd', Meat: '1-hZ2pe64sDQatRufKLzzZt8m-bsGHTgq', Poultry: '1BGNBiE-JOfoG9UGFaF0rAz10J-N_U4p2' }
+};
+// =========================================================================
+// TEMPLATE 2 POP (SPLIT ITEM)
+// WAJIB DIISI! Silakan masukkan ID Google Drive untuk desain template 2 POP
+// Jika masih kosong (''), kanvas akan menampilkan layar hitam peringatan.
+// =========================================================================
+const DEFAULT_TEMPLATES_2POP = {
+    BJR: { Fishery: '1fPJ6viAapM61CPtDqkax04Hy5Q2AxVP_', 'Fruit/Veg': '1315O4SLhj7Ydn5esyetNrPayqaLFlXq6', Meat: '1jYwAYtCpK7S6FqFQqAHGZDRknmvrr7Uu', Poultry: '1xNvsO_le7CmZEJbYARiMyyo4lbd914b6' },
+    CMS: { Fishery: '1620_yGxU3qFI0jcCuv-p7xIHoZH0U-57', 'Fruit/Veg': '1YEseEoc8Ncp3aewLHcVI26KuOhbI_aPA', Meat: '1pO5KGZMKzL53FbQhT60J0bB66CUFycxK', Poultry: '1MsM6diGCG4EBveLrYzF3LnRwHMvUwGCH' },
+    GCW: { Fishery: '1-Cgbb29LvaLU3kBoN-QIoH9--VgJEN-Y', 'Fruit/Veg': '1iNrawNXR_gFaSUCgdUsEmBTvek-QlZ5w', Meat: '1Pu9y020rBx_eBZ9tmtcIQxuL-hRZFh-j', Poultry: '1CXUUcoyCmgRBE61gKFw70WL2i9ECDpr6' },
+    GRT: { Fishery: '1AaegoN__0waeQ7wVNZBdkVbIUCDZmSIS', 'Fruit/Veg': '1_ODO_5-khNk1JvuP6MYUCKFJBCiGRztM', Meat: '1PirkulWaly1bVxwi02Q77LnOwrLxgSa6', Poultry: '1F5nXtlccjTN1uZsLJGX0-51h3uvzGq3E' },
+    MBT: { Fishery: '197yKRKaFsHSilAt0u9-1PtZfcpRj1raU', 'Fruit/Veg': '11xRQ9EoYIwmADRWvvWZBnosIlPvO4egT', Meat: '1mKZIHsGZLTKwDWGrFPxTo1FrDszKYwrU', Poultry: '1oi-QtfVBWB1QeoPFyOjzPdjKttpGUirU' },
+    TSK: { Fishery: '15FsUjSNzZEfjferCHiw392Mmacp3yhar', 'Fruit/Veg': '1nC9FRYLC6TydovZOiH-jcRqpHaHXOzfR', Meat: '1w4UUpLougO0ImRgLlqrDps6O-zlB0HsN', Poultry: '1ZaW3Otb84V14mP7-0e0W7Tf1TEBzytyK' },
+    YCN: { Fishery: '10cFo2_-XcKOBH-NrWNvrAAmkIUDFOVS2', 'Fruit/Veg': '1aSGgYNDsu0rjfCSwbAaHjnljyI5Np5PM', Meat: '1hFTyT9I1YLYQd2igX608oLdfru-Qr_Cb', Poultry: '12xOmcwaH9SPCd6oi1Gcwn10ZsWjn7mnZ' },
+    YMJ: { Fishery: '1HkLCETCxOtw9bKsBRYglas7J08gpmCDn', 'Fruit/Veg': '1ctBV1JreYcIf0CugfE2PRf6eCg-saGWK', Meat: '1kp0wPUAFbi77qroHR20qvXTPfoT2Bwkh', Poultry: '1MRJLWCiNNINOnXKq9ooNWaL5yjWnoieE' }
+};
+const BRANCHES = Object.keys(DEFAULT_TEMPLATES);
+function App() {
+    const [layoutMode, setLayoutMode] = useState('1POP'); // '1POP' or '2POP'
+    // STATE GLOBAL
+    const [selectedBranch, setSelectedBranch] = useState('CMS');
+    const [category, setCategory] = useState('Fruit/Veg');
+    // STATE ITEM 1 (Standard)
+    const [productName, setProductName] = useState('Sweet Pear');
+    const [titleAlign, setTitleAlign] = useState('center'); // ALIGNMENT STATE 1
+    const [customImagePrompt, setCustomImagePrompt] = useState('');
+    const [isPromo, setIsPromo] = useState(true);
+    const [normalPrice, setNormalPrice] = useState('3.895');
+    const [promoPrice, setPromoPrice] = useState('2.990');
+    const [unit, setUnit] = useState('/100g');
+    const [rawProductImg, setRawProductImg] = useState(null);
+    const [productBgLessImg, setProductBgLessImg] = useState(null);
+    const [isManualUpload, setIsManualUpload] = useState(false);
+    const [aiExtractionFailed, setAiExtractionFailed] = useState(false);
+    const [bgTolerance, setBgTolerance] = useState(40);
+    // STATE ITEM 2 (Khusus 2POP)
+    const [productName2, setProductName2] = useState('Apel Dazzle');
+    const [customImagePrompt2, setCustomImagePrompt2] = useState('');
+    const [isPromo2, setIsPromo2] = useState(true);
+    const [normalPrice2, setNormalPrice2] = useState('12.500');
+    const [promoPrice2, setPromoPrice2] = useState('9.865');
+    const [unit2, setUnit2] = useState('/100g');
+    const [rawProductImg2, setRawProductImg2] = useState(null);
+    const [productBgLessImg2, setProductBgLessImg2] = useState(null);
+    const [isManualUpload2, setIsManualUpload2] = useState(false);
+    const [aiExtractionFailed2, setAiExtractionFailed2] = useState(false);
+    const [bgTolerance2, setBgTolerance2] = useState(40);
+    // STATE EKSTRA 1POP
+    const [benefitPoints, setBenefitPoints] = useState(['Manis dan renyah', 'Kaya vitamin C', 'Segar setiap hari']);
+    const [period, setPeriod] = useState('01-15\nAGUSTUS');
+    const [badgeText, setBadgeText] = useState('');
+    const [badgeColor, setBadgeColor] = useState('#15803d');
+    const [badgeTextScale, setBadgeTextScale] = useState(1);
+    const [baseImage, setBaseImage] = useState(null);
+    const [loadingMsg, setLoadingMsg] = useState('');
+    const [errorMsg, setErrorMsg] = useState('');
+    const [renderTrigger, setRenderTrigger] = useState(0);
+    const fileInputRef = useRef(null);
+    const fileInputRef2 = useRef(null);
+    // Menyimpan posisi & scale semua elemen dengan KORDINAT DEFAULT BARU
+    const [elements, setElements] = useState({
+        // 1 POP Elements
+        title: { x: 530, y: 500, scale: 1.00 },
+        image: { x: 650, y: 832, scale: 0.83 },
+        period: { x: 178, y: 911, scale: 0.89 },
+        benefits: { x: 36, y: 1163, scale: 0.85 },
+        price: { x: 688, y: 1372, scale: 0.65 },
+        normalPrice: { x: 907, y: 1197, scale: 0.83 },
+        unit: { x: 923, y: 1375, scale: 0.80 },
+        badge: { x: LOGICAL_WIDTH / 2, y: 220, scale: 1 },
+        // 2 POP Elements (ITEM 1 - ATAS)
+        title1: { x: 800, y: 590, scale: 0.60 },
+        image1: { x: 280, y: 700, scale: 0.95 },
+        price1: { x: 790, y: 830, scale: 0.72 },
+        normalPrice1: { x: 955, y: 700, scale: 1.24 },
+        unit1: { x: 1022, y: 845, scale: 0.88 },
+        // 2 POP Elements (ITEM 2 - BAWAH)
+        title2: { x: 800, y: 1125, scale: 0.60 },
+        image2: { x: 280, y: 1180, scale: 0.95 },
+        price2: { x: 790, y: 1350, scale: 0.72 },
+        normalPrice2: { x: 955, y: 1220, scale: 1.24 },
+        unit2: { x: 1022, y: 1360, scale: 0.88 }
+    });
+    const canvasRef = useRef(null);
+    const containerRef = useRef(null);
+    const [activeElement, setActiveElement] = useState(null);
+    const [isMobileFullscreen, setIsMobileFullscreen] = useState(false);
+    // PANEL DRAG STATE (Agar Panel bisa ditarik kemana-mana)
+    const [panelPos, setPanelPos] = useState({ x: 20, y: 20 });
+    const [isPanelInitialized, setIsPanelInitialized] = useState(false);
+    const isPanelDragging = useRef(false);
+    const panelDragStart = useRef({ x: 0, y: 0 });
+    const isDragging = useRef(false);
+    const dragTarget = useRef(null);
+    const dragOffset = useRef({ x: 0, y: 0 });
+    const hitboxes = useRef({});
+    const lastProcessedImg = useRef(null);
+    const lastProcessedImg2 = useRef(null);
+    /* STREAMING_CHUNK:Draggable Edit Panel Logic... */
+    useEffect(() => {
+        // Inisialisasi posisi panel di tengah bawah agar mudah diraih saat muncul
+        if (!isPanelInitialized && activeElement && containerRef.current) {
+            const rect = containerRef.current.getBoundingClientRect();
+            const isMobile = window.innerWidth < 768;
+            setPanelPos({
+                x: rect.width / 2 - (isMobile ? 140 : 160),
+                y: rect.height - (isMobile ? 160 : 180)
+            });
+            setIsPanelInitialized(true);
+        }
+    }, [activeElement, isPanelInitialized]);
+    const handlePanelDragStart = (e) => {
+        isPanelDragging.current = true;
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        panelDragStart.current = { x: clientX - panelPos.x, y: clientY - panelPos.y };
+        e.stopPropagation();
+    };
+    const handlePanelDragMove = useCallback((e) => {
+        if (!isPanelDragging.current)
+            return;
+        if (e.cancelable)
+            e.preventDefault();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        setPanelPos({ x: clientX - panelDragStart.current.x, y: clientY - panelDragStart.current.y });
+    }, [panelPos]);
+    const handlePanelDragEnd = useCallback(() => {
+        isPanelDragging.current = false;
+    }, []);
+    useEffect(() => {
+        window.addEventListener('pointermove', handlePanelDragMove, { passive: false });
+        window.addEventListener('pointerup', handlePanelDragEnd);
+        window.addEventListener('touchmove', handlePanelDragMove, { passive: false });
+        window.addEventListener('touchend', handlePanelDragEnd);
+        return () => {
+            window.removeEventListener('pointermove', handlePanelDragMove);
+            window.removeEventListener('pointerup', handlePanelDragEnd);
+            window.removeEventListener('touchmove', handlePanelDragMove);
+            window.removeEventListener('touchend', handlePanelDragEnd);
+        };
+    }, [handlePanelDragMove, handlePanelDragEnd]);
+    /* STREAMING_CHUNK:Image Extraction Core Function... */
+    const processImageBackground = async (rawImg, isManual, bgTol, extractionFailed, setBgLess, setExtractionFailed, lastImgRef) => {
+        if (!rawImg)
+            return;
+        const runSmartFloodFill = () => {
+            const offCanvas = document.createElement('canvas');
+            const w = rawImg.width;
+            const h = rawImg.height;
+            offCanvas.width = w;
+            offCanvas.height = h;
+            const ctx = offCanvas.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(rawImg, 0, 0);
+            const imageData = ctx.getImageData(0, 0, w, h);
+            const data = imageData.data;
+            let transp = 0;
+            const corners = [0, (w - 1) * 4, (h - 1) * w * 4, ((h - 1) * w + w - 1) * 4];
+            corners.forEach(idx => { if (data[idx + 3] < 50)
+                transp++; });
+            if (transp >= 2) {
+                setBgLess(rawImg);
+                setLoadingMsg('');
+                setRenderTrigger(p => p + 1);
+                return;
+            }
+            let cR = 0, cG = 0, cB = 0;
+            corners.forEach(idx => { cR += data[idx]; cG += data[idx + 1]; cB += data[idx + 2]; });
+            const tR = cR / 4;
+            const tG = cG / 4;
+            const tB = cB / 4;
+            const visited = new Uint8Array(w * h);
+            const queue = new Int32Array(w * h);
+            let qHead = 0, qTail = 0;
+            const pushToQueue = (x, y) => {
+                if (x < 0 || x >= w || y < 0 || y >= h)
+                    return;
+                const idx = y * w + x;
+                if (visited[idx] === 0) {
+                    visited[idx] = 1;
+                    queue[qTail++] = idx;
+                }
+            };
+            for (let x = 0; x < w; x++) {
+                for (let d = 0; d < 3; d++) {
+                    pushToQueue(x, d);
+                    pushToQueue(x, h - 1 - d);
+                }
+            }
+            for (let y = 0; y < h; y++) {
+                for (let d = 0; d < 3; d++) {
+                    pushToQueue(d, y);
+                    pushToQueue(w - 1 - d, y);
+                }
+            }
+            while (qHead < qTail) {
+                const idx = queue[qHead++];
+                const x = idx % w;
+                const y = Math.floor(idx / w);
+                const i = idx * 4;
+                const dist = Math.sqrt(Math.pow(data[i] - tR, 2) + Math.pow(data[i + 1] - tG, 2) + Math.pow(data[i + 2] - tB, 2));
+                if (dist <= bgTol) {
+                    visited[idx] = 2;
+                    pushToQueue(x + 1, y);
+                    pushToQueue(x - 1, y);
+                    pushToQueue(x, y + 1);
+                    pushToQueue(x, y - 1);
+                }
+            }
+            for (let i = 0; i < w * h; i++) {
+                if (visited[i] === 2) {
+                    data[i * 4 + 3] = 0;
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+            const newImg = new Image();
+            newImg.onload = () => { setBgLess(newImg); setRenderTrigger(p => p + 1); setLoadingMsg(''); };
+            newImg.src = offCanvas.toDataURL('image/png');
+        };
+        if (isManual && !extractionFailed) {
+            if (lastImgRef.current !== rawImg) {
+                lastImgRef.current = rawImg;
+                setLoadingMsg('AI Sedang Menyeleksi Objek... (Membutuhkan beberapa detik)');
+                try {
+                    const config = { publicPath: "https://unpkg.com/@imgly/background-removal@1.4.3/dist/assets/", model: "small" };
+                    const dataurl = rawImg.src;
+                    const arr = dataurl.split(',');
+                    const mime = arr[0].match(/:(.*?);/)[1];
+                    const bstr = atob(arr[1]);
+                    let n = bstr.length;
+                    const u8arr = new Uint8Array(n);
+                    while (n--) {
+                        u8arr[n] = bstr.charCodeAt(n);
+                    }
+                    const imageBlob = new Blob([u8arr], { type: mime });
+                    const resultBlob = await removeBackground(imageBlob, config);
+                    const resultUrl = URL.createObjectURL(resultBlob);
+                    const img = new Image();
+                    img.onload = () => { setBgLess(img); setRenderTrigger(p => p + 1); setLoadingMsg(''); };
+                    img.src = resultUrl;
+                }
+                catch (error) {
+                    console.error("AI Extractor Error:", error);
+                    setExtractionFailed(true);
+                    runSmartFloodFill();
+                }
+            }
+        }
+        else {
+            runSmartFloodFill();
+        }
+    };
+    useEffect(() => { processImageBackground(rawProductImg, isManualUpload, bgTolerance, aiExtractionFailed, setProductBgLessImg, setAiExtractionFailed, lastProcessedImg); }, [rawProductImg, isManualUpload, bgTolerance, aiExtractionFailed]);
+    useEffect(() => { processImageBackground(rawProductImg2, isManualUpload2, bgTolerance2, aiExtractionFailed2, setProductBgLessImg2, setAiExtractionFailed2, lastProcessedImg2); }, [rawProductImg2, isManualUpload2, bgTolerance2, aiExtractionFailed2]);
+    /* STREAMING_CHUNK:AI Image & Text Generation... */
+    const generateProductImage = async (itemIndex = 1, itemNameOverride = null, customPromptOverride = null) => {
+        const isItem1 = itemIndex === 1;
+        if (isItem1) {
+            setIsManualUpload(false);
+            setAiExtractionFailed(false);
+        }
+        else {
+            setIsManualUpload2(false);
+            setAiExtractionFailed2(false);
+        }
+        setLoadingMsg(`Membuat Foto Produk ${itemIndex}...`);
+        try {
+            const baseName = isItem1 ? productName : productName2;
+            const basePrompt = isItem1 ? customImagePrompt : customImagePrompt2;
+            const nameToUse = itemNameOverride || baseName;
+            const customInstr = customPromptOverride || basePrompt;
+            const lowerName = nameToUse.toLowerCase();
+            const clusterKeywords = ['anggur', 'lengkeng', 'kelengkeng', 'rambutan', 'duku', 'pisang', 'kurma', 'cherry', 'ceri', 'berry', 'stroberi', 'strawberry'];
+            const isClusterFruit = clusterKeywords.some(keyword => lowerName.includes(keyword));
+            const rawMeatKeywords = ['daging', 'ayam', 'ikan', 'sapi', 'rendang', 'tulang', 'iga', 'buntut', 'udang', 'cumi', 'fillet', 'salmon', 'tuna', 'tenggiri', 'kembung', 'lele', 'bawal', 'gurame', 'nila'];
+            const isRawMeat = rawMeatKeywords.some(keyword => lowerName.includes(keyword));
+            let prompt = "";
+            if (isClusterFruit) {
+                prompt = `A realistic, medium-sized single bunch of fresh ${nameToUse} attached to a stem, beautifully placed inside a compact aesthetic rustic woven rattan fruit basket. It should look like a standard premium grocery store portion. Just a natural, highly aesthetic arrangement showing fresh natural textures.`;
+            }
+            else if (isRawMeat) {
+                if (lowerName.includes('rendang') || lowerName.includes('daging')) {
+                    prompt = `An aesthetic, highly realistic arrangement of exactly 4 to 5 large, thick, premium chunks of RAW, UNCOOKED fresh ${nameToUse}. Naturally placed together to represent a high-quality grocery store portion. Show the raw, fresh natural meat texture and marbling clearly. NO containers, just naturally grouped.`;
+                }
+                else if (lowerName.includes('udang') || lowerName.includes('cumi') || lowerName.includes('kerang')) {
+                    prompt = `An aesthetic, highly realistic and natural pile of RAW, UNCOOKED fresh ${nameToUse} (representing a generous 300g to 500g grocery store portion). It must look organic and appetizing, showing various angles (e.g. heads and tails visible), not rigidly stacked. Show the fresh natural wet texture clearly. NO containers.`;
+                }
+                else {
+                    prompt = `An aesthetic, naturally appetizing pile of RAW, UNCOOKED fresh ${nameToUse}. The arrangement should represent a realistic 300g to 500g grocery store portion. It must look organic and natural. Keep it nicely grouped but NOT rigidly artificial. Show the raw, fresh natural texture clearly. NO containers.`;
+                }
+                prompt += ` CRITICAL: DO NOT generate cooked meals, DO NOT generate seasoned dishes, NO sauces, NO gravies. Just the pure, fresh, raw meat/seafood.`;
+            }
+            else {
+                prompt = `An aesthetic, naturally grouped pile of fresh ${nameToUse}, beautifully placed inside a compact aesthetic rustic woven rattan fruit basket. The arrangement should represent a premium 200g to 300g grocery store portion—elegantly grouped but looking organic and natural. Show the fresh natural texture clearly.`;
+            }
+            prompt += ` Square composition, commercial grocery store photography, macro detail, highly aesthetic. ISOLATED on a PERFECTLY PURE WHITE background (#FFFFFF). NO kitchenware, NO garnish, NO leaves.`;
+            if (customInstr)
+                prompt += ` Special instruction: ${customInstr}.`;
+            const imgPayload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
+            };
+            const imgResult = await fetchWithRetry('/.netlify/functions/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'image', payload: imgPayload })
+            });
+            const base64Data = imgResult.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+            if (base64Data) {
+                const newImgSrc = `data:image/jpeg;base64,${base64Data}`;
+                const img = new Image();
+                img.onload = () => {
+                    if (isItem1) {
+                        setRawProductImg(img);
+                        setCustomImagePrompt('');
+                        if (layoutMode === '1POP')
+                            setElements(prev => ({ ...prev, image: { ...prev.image, x: 650, y: 832, scale: 0.83 } }));
+                        else
+                            setElements(prev => ({ ...prev, image1: { ...prev.image1, x: 280, y: 700, scale: 0.95 } }));
+                    }
+                    else {
+                        setRawProductImg2(img);
+                        setCustomImagePrompt2('');
+                        setElements(prev => ({ ...prev, image2: { ...prev.image2, x: 280, y: 1180, scale: 0.95 } }));
+                    }
+                    setLoadingMsg('');
+                };
+                img.src = newImgSrc;
+            }
+            else {
+                throw new Error("No image data returned");
+            }
+        }
+        catch (error) {
+            console.error("Image Error:", error);
+            setErrorMsg('Gagal menghasilkan gambar. Pastikan instruksi jelas.');
+            setLoadingMsg('');
+        }
+    };
+    const generateAllAiContent = async (itemIndex = 1) => {
+        const isItem1 = itemIndex === 1;
+        const baseName = isItem1 ? productName : productName2;
+        if (!baseName)
+            return;
+        setLoadingMsg(`Menganalisis Cerdas Item ${itemIndex} (AI)...`);
+        setErrorMsg('');
+        try {
+            const textPayload = {
+                contents: [{
+                        parts: [{
+                                text: `Analisis produk ini: "${baseName}".\n1. Kategorikan HANYA ke salah satu: 'fruit', 'meat', 'poultry', atau 'fishery'.\n2. Buat TEPAT 4 poin manfaat singkat (maksimal 4-5 kata per poin) dari produk ini untuk marketing.\nBalas HANYA dengan JSON murni: {"category": "fruit", "benefits": ["manfaat 1", "manfaat 2"]}`
+                            }]
+                    }],
+                systemInstruction: { parts: [{ text: "You are an AI assistant that only outputs strictly formatted JSON." }] },
+                generationConfig: { responseMimeType: "application/json" }
+            };
+            const textResult = await fetchWithRetry('/.netlify/functions/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'text', payload: textPayload })
+            });
+            const rawText = textResult.candidates?.[0]?.content?.parts?.[0]?.text;
+            let aiParsed;
+            try {
+                aiParsed = JSON.parse(rawText);
+            }
+            catch (e) {
+                const cleanedText = rawText.replace(/`{3}json/gi, '').replace(/`{3}/g, '').trim();
+                aiParsed = JSON.parse(cleanedText);
+            }
+            const catMap = { 'fruit': 'Fruit/Veg', 'meat': 'Meat', 'poultry': 'Poultry', 'fishery': 'Fishery' };
+            const rawCat = aiParsed.category.toLowerCase();
+            const detectedCat = ['fruit', 'meat', 'poultry', 'fishery'].includes(rawCat) ? rawCat : 'fruit';
+            setCategory(catMap[detectedCat]);
+            if (layoutMode === '1POP') {
+                setBenefitPoints(aiParsed.benefits || ['Kaya Nutrisi', 'Sumber Vitamin', 'Segar Setiap Hari', 'Kualitas Terjamin']);
+            }
+            await generateProductImage(itemIndex, baseName);
+        }
+        catch (error) {
+            console.error("AI Error:", error);
+            setErrorMsg('Gagal terhubung ke AI. Silakan ulangi kembali.');
+            setLoadingMsg('');
+        }
+    };
+    /* STREAMING_CHUNK:Event Listeners... */
+    const handleImageUpload = (e, itemIndex = 1) => {
+        const file = e.target.files[0];
+        if (!file)
+            return;
+        const isItem1 = itemIndex === 1;
+        if (isItem1) {
+            setIsManualUpload(true);
+            setAiExtractionFailed(false);
+        }
+        else {
+            setIsManualUpload2(true);
+            setAiExtractionFailed2(false);
+        }
+        setLoadingMsg(`Memproses Upload Foto Item ${itemIndex}...`);
+        setErrorMsg('');
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                const MAX_SIZE = 1024;
+                let w = img.width;
+                let h = img.height;
+                if (w > MAX_SIZE || h > MAX_SIZE) {
+                    if (w > h) {
+                        h = (MAX_SIZE / w) * h;
+                        w = MAX_SIZE;
+                    }
+                    else {
+                        w = (MAX_SIZE / h) * w;
+                        h = MAX_SIZE;
+                    }
+                }
+                const offCanvas = document.createElement('canvas');
+                offCanvas.width = w;
+                offCanvas.height = h;
+                const ctx = offCanvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                const resizedImg = new Image();
+                resizedImg.onload = () => {
+                    if (isItem1) {
+                        setRawProductImg(resizedImg);
+                        if (layoutMode === '1POP')
+                            setElements(prev => ({ ...prev, image: { ...prev.image, x: 650, y: 832, scale: 0.83 } }));
+                        else
+                            setElements(prev => ({ ...prev, image1: { ...prev.image1, x: 280, y: 700, scale: 0.95 } }));
+                    }
+                    else {
+                        setRawProductImg2(resizedImg);
+                        setElements(prev => ({ ...prev, image2: { ...prev.image2, x: 280, y: 1180, scale: 0.95 } }));
+                    }
+                };
+                resizedImg.src = offCanvas.toDataURL('image/png');
+            };
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    };
+    useEffect(() => {
+        const templateSet = layoutMode === '1POP' ? DEFAULT_TEMPLATES : DEFAULT_TEMPLATES_2POP;
+        const driveId = templateSet[selectedBranch]?.[category];
+        if (!driveId) {
+            setBaseImage(null);
+            setRenderTrigger(p => p + 1);
+            return;
+        }
+        const img = new Image();
+        img.crossOrigin = "Anonymous";
+        img.onload = () => {
+            setBaseImage(img);
+            setRenderTrigger(p => p + 1);
+        };
+        img.src = `https://images.weserv.nl/?url=drive.google.com/uc?id=${driveId}`;
+    }, [selectedBranch, category, layoutMode]);
+    const registerHitbox = (id, x, y, w, h) => { hitboxes.current[id] = { x, y, w, h }; };
+    const getPointerPos = useCallback((e) => {
+        const canvas = canvasRef.current;
+        if (!canvas)
+            return { x: 0, y: 0 };
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = LOGICAL_WIDTH / rect.width;
+        const scaleY = LOGICAL_HEIGHT / rect.height;
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+    }, []);
+    const handlePointerDown = (e) => {
+        if (isPanelDragging.current)
+            return; // Abaikan bila sedang seret panel UI
+        const { x, y } = getPointerPos(e);
+        const keys = Object.keys(hitboxes.current).reverse();
+        let found = null;
+        for (const key of keys) {
+            const hb = hitboxes.current[key];
+            if (x >= hb.x && x <= hb.x + hb.w && y >= hb.y && y <= hb.y + hb.h) {
+                isDragging.current = true;
+                dragTarget.current = key;
+                dragOffset.current = { x: x - elements[key].x, y: y - elements[key].y };
+                canvasRef.current.style.cursor = 'grabbing';
+                found = key;
+                break;
+            }
+        }
+        setActiveElement(found);
+        if (!found)
+            setRenderTrigger(p => p + 1);
+    };
+    const handlePointerMove = (e) => {
+        if (isPanelDragging.current)
+            return; // Abaikan kanvas
+        if (!isDragging.current || !dragTarget.current)
+            return;
+        const { x, y } = getPointerPos(e);
+        setElements(prev => ({
+            ...prev,
+            [dragTarget.current]: { ...prev[dragTarget.current], x: x - dragOffset.current.x, y: y - dragOffset.current.y }
+        }));
+        setRenderTrigger(p => p + 1);
+    };
+    const handlePointerUp = () => {
+        isDragging.current = false;
+        dragTarget.current = null;
+        if (canvasRef.current)
+            canvasRef.current.style.cursor = 'default';
+    };
+    // WHEEL SCROLL MOUSE AKTIF UNTUK KOMPUTER
+    const handleWheel = useCallback((e) => {
+        e.preventDefault();
+        const { x, y } = getPointerPos(e);
+        let targetKey = null;
+        const keys = Object.keys(hitboxes.current).reverse();
+        for (const key of keys) {
+            const hb = hitboxes.current[key];
+            if (x >= hb.x && x <= hb.x + hb.w && y >= hb.y && y <= hb.y + hb.h) {
+                targetKey = key;
+                break;
+            }
+        }
+        if (targetKey) {
+            const zoomSpeed = 0.05;
+            const factor = e.deltaY < 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
+            setElements(prev => ({
+                ...prev,
+                [targetKey]: { ...prev[targetKey], scale: Math.max(0.3, Math.min(prev[targetKey].scale * factor, 3)) }
+            }));
+            setRenderTrigger(p => p + 1);
+            setActiveElement(targetKey);
+        }
+    }, [getPointerPos]);
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (canvas) {
+            canvas.addEventListener('wheel', handleWheel, { passive: false });
+            return () => canvas.removeEventListener('wheel', handleWheel);
+        }
+    }, [handleWheel]);
+    const moveActiveElement = (dx, dy) => {
+        if (!activeElement)
+            return;
+        setElements(prev => ({
+            ...prev,
+            [activeElement]: { ...prev[activeElement], x: prev[activeElement].x + dx, y: prev[activeElement].y + dy }
+        }));
+        setRenderTrigger(p => p + 1);
+    };
+    const zoomActiveElement = (factor) => {
+        if (!activeElement)
+            return;
+        setElements(prev => ({
+            ...prev,
+            [activeElement]: { ...prev[activeElement], scale: Math.max(0.3, Math.min(prev[activeElement].scale * factor, 3)) }
+        }));
+        setRenderTrigger(p => p + 1);
+    };
+    const drawPoster = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas)
+            return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        hitboxes.current = {};
+        ctx.save();
+        ctx.scale(RENDER_SCALE, RENDER_SCALE);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        if (!baseImage) {
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+            ctx.fillStyle = '#ef4444';
+            ctx.textAlign = 'center';
+            ctx.font = 'bold 45px Arial';
+            ctx.fillText('TEMPLATE BELUM TERSEDIA', LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '30px Arial';
+            ctx.fillText('Masukkan ID Drive di DEFAULT_TEMPLATES_2POP', LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2 + 60);
+            ctx.restore();
+            return;
+        }
+        ctx.drawImage(baseImage, 0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+        // ==========================================
+        // LOGIKA RENDER 1 POP (STANDAR)
+        // ==========================================
+        if (layoutMode === '1POP') {
+            const imgEl = elements.image;
+            if (productBgLessImg) {
+                const iw = 700 * imgEl.scale;
+                const ih = (productBgLessImg.height / productBgLessImg.width) * iw;
+                const ix = imgEl.x - iw / 2;
+                const iy = imgEl.y - ih / 2;
+                ctx.drawImage(productBgLessImg, ix, iy, iw, ih);
+                registerHitbox('image', ix, iy, iw, ih);
+            }
+            // ---------- RENDER JUDUL PRODUK ----------
+            const titleEl = elements.title;
+            const words = productName.toUpperCase().split(' ');
+            let firstLine = '';
+            let secondLine = '';
+            if (words.length <= 2) {
+                firstLine = productName.toUpperCase();
+            }
+            else {
+                firstLine = words[0];
+                secondLine = words.slice(1).join(' ');
+            }
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#1e293b';
+            const maxTitleW = 850 * titleEl.scale;
+            let anchorX = titleEl.x;
+            if (titleAlign === 'left') {
+                ctx.textAlign = 'left';
+                anchorX = titleEl.x - maxTitleW / 2;
+            }
+            else if (titleAlign === 'right') {
+                ctx.textAlign = 'right';
+                anchorX = titleEl.x + maxTitleW / 2;
+            }
+            else {
+                ctx.textAlign = 'center';
+                anchorX = titleEl.x;
+            }
+            if (titleAlign === 'justify') {
+                ctx.textAlign = 'center';
+                anchorX = titleEl.x;
+                const baseFont = 100 * titleEl.scale;
+                ctx.font = `900 ${baseFont}px "Arial Black", sans-serif`;
+                let fw = ctx.measureText(firstLine).width;
+                let fs1 = baseFont * (maxTitleW / fw);
+                fs1 = Math.min(fs1, 300 * titleEl.scale);
+                let fs2 = 0;
+                if (secondLine) {
+                    ctx.font = `900 ${baseFont}px "Arial Black", sans-serif`;
+                    let sw = ctx.measureText(secondLine).width;
+                    fs2 = baseFont * (maxTitleW / sw);
+                    fs2 = Math.min(fs2, 300 * titleEl.scale);
+                }
+                ctx.font = `900 ${fs1}px "Arial Black", sans-serif`;
+                ctx.fillText(firstLine, anchorX, titleEl.y);
+                if (secondLine) {
+                    ctx.font = `900 ${fs2}px "Arial Black", sans-serif`;
+                    let spacing = (fs1 + fs2) * 0.48;
+                    ctx.fillText(secondLine, anchorX, titleEl.y + spacing);
+                }
+            }
+            else {
+                let fontSize1 = 150 * titleEl.scale;
+                ctx.font = `900 ${fontSize1}px "Arial Black", sans-serif`;
+                let fw = ctx.measureText(firstLine).width;
+                if (fw > maxTitleW) {
+                    fontSize1 = fontSize1 * (maxTitleW / fw);
+                    ctx.font = `900 ${fontSize1}px "Arial Black", sans-serif`;
+                }
+                ctx.fillText(firstLine, anchorX, titleEl.y);
+                if (secondLine) {
+                    let fontSize2 = 90 * titleEl.scale;
+                    ctx.font = `900 ${fontSize2}px "Arial Black", sans-serif`;
+                    let sw = ctx.measureText(secondLine).width;
+                    if (sw > maxTitleW) {
+                        fontSize2 = fontSize2 * (maxTitleW / sw);
+                        ctx.font = `900 ${fontSize2}px "Arial Black", sans-serif`;
+                    }
+                    ctx.fillText(secondLine, anchorX, titleEl.y + (120 * titleEl.scale));
+                }
+            }
+            // Hitbox Judul (Presisi)
+            registerHitbox('title', titleEl.x - 425 * titleEl.scale, titleEl.y - 85 * titleEl.scale, 850 * titleEl.scale, 250 * titleEl.scale);
+            // ---------- RENDER PERIODE & BENEFIT ----------
+            const perEl = elements.period;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ffffff';
+            const periodLines = period.split('\n');
+            let perY = perEl.y - ((periodLines.length - 1) * 18 * perEl.scale);
+            periodLines.forEach((line) => {
+                ctx.font = `900 ${38 * perEl.scale}px "Arial Black", sans-serif`;
+                ctx.fillText(line, perEl.x, perY);
+                perY += 45 * perEl.scale;
+            });
+            registerHitbox('period', perEl.x - 120 * perEl.scale, perEl.y - 40 * perEl.scale, 240 * perEl.scale, 140 * perEl.scale);
+            const benEl = elements.benefits;
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${28 * benEl.scale}px Arial, sans-serif`;
+            let benY = benEl.y;
+            const maxBenWidth = 340 * benEl.scale;
+            benefitPoints.forEach(pt => {
+                if (pt.trim()) {
+                    const words = pt.split(' ');
+                    let line = '';
+                    let isFirstLine = true;
+                    for (let n = 0; n < words.length; n++) {
+                        const testLine = line + words[n] + ' ';
+                        const testPrefix = isFirstLine ? '✓ ' : '   ';
+                        const testWidth = ctx.measureText(testPrefix + testLine).width;
+                        if (testWidth > maxBenWidth && n > 0) {
+                            ctx.fillText(testPrefix + line.trim(), benEl.x, benY);
+                            line = words[n] + ' ';
+                            benY += 32 * benEl.scale;
+                            isFirstLine = false;
+                        }
+                        else {
+                            line = testLine;
+                        }
+                    }
+                    ctx.fillText((isFirstLine ? '✓ ' : '   ') + line.trim(), benEl.x, benY);
+                    benY += 42 * benEl.scale;
+                }
+            });
+            registerHitbox('benefits', benEl.x - 10, benEl.y - 30 * benEl.scale, 400 * benEl.scale, (benY - benEl.y) + 10 * benEl.scale);
+            // ---------- RENDER HARGA ----------
+            const prEl = elements.price;
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'center';
+            ctx.font = `900 ${230 * prEl.scale}px "Arial Black", sans-serif`;
+            ctx.fillText(promoPrice, prEl.x, prEl.y);
+            const promoMetrics = ctx.measureText(promoPrice);
+            const promoWidth = promoMetrics.width;
+            const promoHeight = 230 * prEl.scale;
+            ctx.textAlign = 'right';
+            ctx.font = `900 ${75 * prEl.scale}px "Arial Black", sans-serif`;
+            ctx.fillText('Rp', prEl.x - (promoWidth / 2) - (10 * prEl.scale), prEl.y - (promoHeight * 0.35));
+            if (isPromo && normalPrice) {
+                const npEl = elements.normalPrice;
+                const normalStr = `Rp ${normalPrice}`;
+                ctx.textAlign = 'right';
+                ctx.fillStyle = '#000000';
+                ctx.font = `bold ${75 * npEl.scale}px Arial, sans-serif`;
+                ctx.fillText(normalStr, npEl.x, npEl.y);
+                const normalWidth = ctx.measureText(normalStr).width;
+                ctx.beginPath();
+                ctx.moveTo(npEl.x - normalWidth, npEl.y + (18 * npEl.scale));
+                ctx.lineTo(npEl.x, npEl.y - (39 * npEl.scale));
+                ctx.strokeStyle = '#ef4444';
+                ctx.lineWidth = 10 * npEl.scale;
+                ctx.stroke();
+                // Hitbox independen untuk Harga Coret
+                registerHitbox('normalPrice', npEl.x - normalWidth, npEl.y - 75 * npEl.scale, normalWidth, 100 * npEl.scale);
+            }
+            // Hitbox independen untuk Harga Promo
+            registerHitbox('price', prEl.x - promoWidth / 2 - 100 * prEl.scale, prEl.y - 180 * prEl.scale, promoWidth + 120 * prEl.scale, 200 * prEl.scale);
+            const unEl = elements.unit;
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'left';
+            ctx.font = `900 ${65 * unEl.scale}px "Arial Black", sans-serif`;
+            ctx.fillText(unit, unEl.x, unEl.y);
+            const uW = ctx.measureText(unit).width;
+            registerHitbox('unit', unEl.x - 10, unEl.y - 50 * unEl.scale, uW + 20, 70 * unEl.scale);
+            if (badgeText) {
+                const bgEl = elements.badge;
+                ctx.fillStyle = badgeColor;
+                ctx.beginPath();
+                ctx.arc(bgEl.x, bgEl.y, 90 * bgEl.scale, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(bgEl.x, bgEl.y, 82 * bgEl.scale, 0, Math.PI * 2);
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 3 * bgEl.scale;
+                ctx.stroke();
+                ctx.fillStyle = '#ffffff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const bWords = badgeText.split(' ');
+                const effScale = bgEl.scale * badgeTextScale;
+                if (bWords.length > 2) {
+                    ctx.font = `900 ${22 * effScale}px "Arial Black", sans-serif`;
+                    ctx.fillText(bWords.slice(0, 2).join(' '), bgEl.x, bgEl.y - (15 * effScale));
+                    ctx.fillText(bWords.slice(2).join(' '), bgEl.x, bgEl.y + (15 * effScale));
+                }
+                else if (bWords.length === 2) {
+                    ctx.font = `900 ${26 * effScale}px "Arial Black", sans-serif`;
+                    ctx.fillText(bWords[0], bgEl.x, bgEl.y - (15 * effScale));
+                    ctx.fillText(bWords[1], bgEl.x, bgEl.y + (15 * effScale));
+                }
+                else {
+                    ctx.font = `900 ${30 * effScale}px "Arial Black", sans-serif`;
+                    ctx.fillText(badgeText, bgEl.x, bgEl.y);
+                }
+                registerHitbox('badge', bgEl.x - 90 * bgEl.scale, bgEl.y - 90 * bgEl.scale, 180 * bgEl.scale, 180 * bgEl.scale);
+            }
+        }
+        // ==========================================
+        // LOGIKA RENDER 2 POP (SPLIT ITEM - Justify Default)
+        // ==========================================
+        else {
+            const getColorsByCategory = (cat) => {
+                switch (cat) {
+                    case 'Meat': return { light: '#ef4444', dark: '#7f1d1d' };
+                    case 'Poultry': return { light: '#f97316', dark: '#9a3412' };
+                    case 'Fishery': return { light: '#3b82f6', dark: '#1e3a8a' };
+                    case 'Fruit/Veg':
+                    default: return { light: '#16a34a', dark: '#064e3b' };
+                }
+            };
+            const titleColors = getColorsByCategory(category);
+            // PERBAIKAN: Offset otomatis khusus Daging (Meat) naik 3 klik (-45px)
+            const meatOffset = category === 'Meat' ? -45 : 0;
+            // 3. FUNGSI MENGGAMBAR KOTAK HARGA LENGKUNG (STATIS)
+            const drawStaticBackgroundBox = (isTop) => {
+                const boxY = (isTop ? 700 : 1250) + meatOffset;
+                const boxH = 180;
+                const topY = boxY - (boxH / 2);
+                const botY = boxY + (boxH / 2);
+                const leftX = 460;
+                const splitX = 860;
+                const radius = 50;
+            };
+            const drawItem = (imgKey, titleKey, priceKey, normalPriceKey, unitKey, imgEl, titleEl, priceEl, normalPriceEl, unitEl, bgLessImg, name, isProm, normalPr, promoPr, unitText) => {
+                // Gambar Produk
+                if (bgLessImg) {
+                    const iw = 450 * imgEl.scale;
+                    const ih = (bgLessImg.height / bgLessImg.width) * iw;
+                    const ix = imgEl.x - iw / 2;
+                    const iy = imgEl.y - ih / 2;
+                    ctx.drawImage(bgLessImg, ix, iy, iw, ih);
+                    registerHitbox(imgKey, ix, iy, iw, ih);
+                }
+                // Gambar Judul Bersusun (FORCED JUSTIFY)
+                const words = name.toUpperCase().split(' ');
+                let firstLine = '';
+                let secondLine = '';
+                if (words.length <= 1) {
+                    firstLine = name.toUpperCase();
+                }
+                else {
+                    firstLine = words[0];
+                    secondLine = words.slice(1).join(' ');
+                }
+                ctx.textBaseline = 'middle';
+                const maxW = 520 * titleEl.scale;
+                let anchorX = titleEl.x - (maxW / 2);
+                ctx.textAlign = 'center';
+                const baseFont = 100 * titleEl.scale;
+                ctx.font = `900 ${baseFont}px "Arial Black", sans-serif`;
+                let fw = ctx.measureText(firstLine).width;
+                let fs1 = baseFont * (maxW / fw);
+                fs1 = Math.min(fs1, 200 * titleEl.scale);
+                let fs2 = 0;
+                if (secondLine) {
+                    ctx.font = `900 ${baseFont}px "Arial Black", sans-serif`;
+                    let sw = ctx.measureText(secondLine).width;
+                    fs2 = baseFont * (maxW / sw);
+                    fs2 = Math.min(fs2, 200 * titleEl.scale);
+                }
+                if (secondLine) {
+                    ctx.fillStyle = titleColors.light;
+                    ctx.font = `900 ${fs1}px "Arial Black", sans-serif`;
+                    let spacing = (fs1 + fs2) * 0.45;
+                    ctx.fillText(firstLine, titleEl.x, titleEl.y - (spacing / 2));
+                    ctx.fillStyle = titleColors.dark;
+                    ctx.font = `900 ${fs2}px "Arial Black", sans-serif`;
+                    ctx.fillText(secondLine, titleEl.x, titleEl.y + (spacing / 2));
+                }
+                else {
+                    ctx.fillStyle = titleColors.dark;
+                    ctx.font = `900 ${fs1}px "Arial Black", sans-serif`;
+                    ctx.fillText(firstLine, titleEl.x, titleEl.y);
+                }
+                // Fixed hitbox untuk Judul 2POP (Sangat Presisi Tepat Di Teks)
+                registerHitbox(titleKey, titleEl.x - maxW / 2, titleEl.y - 80 * titleEl.scale, maxW, 160 * titleEl.scale);
+                // Gambar Harga Coret (Independen)
+                if (isProm && normalPr && normalPriceEl) {
+                    const normalStr = `RP. ${normalPr}`;
+                    ctx.textAlign = 'right';
+                    ctx.fillStyle = '#000000';
+                    ctx.font = `bold ${35 * normalPriceEl.scale}px Arial, sans-serif`;
+                    const nx = normalPriceEl.x;
+                    const ny = normalPriceEl.y;
+                    ctx.fillText(normalStr, nx, ny);
+                    const nm = ctx.measureText(normalStr);
+                    const nw = nm.width;
+                    ctx.beginPath();
+                    ctx.moveTo(nx - nw, ny + (8 * normalPriceEl.scale));
+                    ctx.lineTo(nx, ny - (18 * normalPriceEl.scale));
+                    ctx.strokeStyle = '#ef4444';
+                    ctx.lineWidth = 6 * normalPriceEl.scale;
+                    ctx.stroke();
+                    // Hitbox Harga Coret
+                    registerHitbox(normalPriceKey, nx - nw, ny - 30 * normalPriceEl.scale, nw, 50 * normalPriceEl.scale);
+                }
+                // Gambar Harga Promo
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#ffffff';
+                ctx.font = `900 ${150 * priceEl.scale}px "Arial Black", sans-serif`;
+                ctx.fillText(promoPr, priceEl.x, priceEl.y);
+                const promoWidth = ctx.measureText(promoPr).width;
+                ctx.textAlign = 'right';
+                ctx.font = `900 ${35 * priceEl.scale}px "Arial Black", sans-serif`;
+                ctx.fillText('RP.', priceEl.x - (promoWidth / 2) - (10 * priceEl.scale), priceEl.y - (45 * priceEl.scale));
+                // Hitbox Harga Promo (Terpisah ketat)
+                registerHitbox(priceKey, priceEl.x - promoWidth / 2 - 100 * priceEl.scale, priceEl.y - 120 * priceEl.scale, promoWidth + 120 * priceEl.scale, 150 * priceEl.scale);
+                // Gambar Satuan
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#ffffff';
+                ctx.font = `900 ${40 * unitEl.scale}px "Arial Black", sans-serif`;
+                ctx.fillText(unitText, unitEl.x, unitEl.y);
+                const unitW = ctx.measureText(unitText).width;
+                registerHitbox(unitKey, unitEl.x - unitW / 2 - 20, unitEl.y - 40 * unitEl.scale, unitW + 40, 80 * unitEl.scale);
+            };
+            // Render Komponen Teks & Gambar Item Atas & Bawah dengan Offset Khusus Daging
+            const applyOffset = (el) => ({ ...el, y: el.y + meatOffset });
+            // Draw calls with forced logic inside the drawItem
+            drawItem('image1', 'title1', 'price1', 'normalPrice1', 'unit1', applyOffset(elements.image1), applyOffset(elements.title1), applyOffset(elements.price1), applyOffset(elements.normalPrice1), applyOffset(elements.unit1), productBgLessImg, productName, isPromo, normalPrice, promoPrice, unit);
+            drawItem('image2', 'title2', 'price2', 'normalPrice2', 'unit2', applyOffset(elements.image2), applyOffset(elements.title2), applyOffset(elements.price2), applyOffset(elements.normalPrice2), applyOffset(elements.unit2), productBgLessImg2, productName2, isPromo2, normalPrice2, promoPrice2, unit2);
+        }
+        // GARIS BINGKAI SELEKSI UNTUK EDITING 
+        if (activeElement && hitboxes.current[activeElement]) {
+            const hb = hitboxes.current[activeElement];
+            ctx.strokeStyle = '#14b8a6';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([15, 10]);
+            ctx.strokeRect(hb.x, hb.y, hb.w, hb.h);
+            ctx.setLineDash([]);
+        }
+        ctx.restore();
+    }, [baseImage, productBgLessImg, productBgLessImg2, productName, productName2, period, benefitPoints, isPromo, isPromo2, normalPrice, normalPrice2, promoPrice, promoPrice2, unit, unit2, badgeText, badgeColor, badgeTextScale, elements, activeElement, layoutMode, category, titleAlign]);
+    useEffect(() => { drawPoster(); }, [drawPoster, renderTrigger]);
+    return (React.createElement("div", { className: "flex flex-col-reverse md:flex-row h-[100dvh] w-full bg-slate-950 text-slate-200 font-sans overflow-hidden" },
+        React.createElement("div", { className: `w-full md:w-[420px] bg-slate-900 border-t md:border-t-0 md:border-r border-slate-800 flex flex-col z-10 shadow-2xl overflow-y-auto flex-shrink-0 transition-all duration-300 ${isMobileFullscreen ? 'h-0 overflow-hidden md:h-full md:flex' : 'h-[55dvh] md:h-full'}` },
+            React.createElement("div", { className: "p-5 border-b border-slate-800 bg-slate-900/50 flex flex-col justify-center sticky top-0 backdrop-blur-md z-20" },
+                React.createElement("h1", { className: "text-xl font-black text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-emerald-400" }, "AUTO POP GEN"),
+                React.createElement("p", { className: "text-[10px] text-slate-500 uppercase tracking-widest mt-1" }, "Enterprise Edition v6.5 \u2022 8K Render")),
+            React.createElement("div", { className: "p-5 space-y-5" },
+                React.createElement("div", { className: "flex bg-slate-800 p-1 rounded-xl" },
+                    React.createElement("button", { className: `flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-all ${layoutMode === '1POP' ? 'bg-teal-500 text-slate-900 shadow-md' : 'text-slate-400 hover:bg-slate-700'}`, onClick: () => { setLayoutMode('1POP'); setRenderTrigger(p => p + 1); } },
+                        React.createElement(Square, { size: 14 }),
+                        " 1 Item (Standar)"),
+                    React.createElement("button", { className: `flex-1 py-2 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-all ${layoutMode === '2POP' ? 'bg-teal-500 text-slate-900 shadow-md' : 'text-slate-400 hover:bg-slate-700'}`, onClick: () => { setLayoutMode('2POP'); setRenderTrigger(p => p + 1); } },
+                        React.createElement(SplitSquareHorizontal, { size: 14 }),
+                        " 2 Item (Split)")),
+                React.createElement("div", { className: "bg-slate-800/50 p-4 rounded-xl border border-slate-700/50" },
+                    React.createElement("div", { className: "flex justify-between items-center mb-3" },
+                        React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1" },
+                            React.createElement(MapPin, { size: 12 }),
+                            " Pilih Cabang"),
+                        React.createElement("select", { value: category, onChange: (e) => { setCategory(e.target.value); setRenderTrigger(p => p + 1); }, className: "bg-slate-900 border border-slate-700 text-slate-300 text-[10px] rounded p-1 outline-none focus:border-teal-500 font-bold" },
+                            React.createElement("option", { value: "Fruit/Veg" }, "Hijau (Buah/Sayur)"),
+                            React.createElement("option", { value: "Meat" }, "Merah (Daging)"),
+                            React.createElement("option", { value: "Poultry" }, "Oranye (Ayam)"),
+                            React.createElement("option", { value: "Fishery" }, "Biru (Ikan/Seafood)"))),
+                    React.createElement("div", { className: "grid grid-cols-4 gap-2" }, BRANCHES.map(b => (React.createElement("button", { key: b, onClick: () => setSelectedBranch(b), className: `py-2 text-xs font-bold rounded-lg transition-all ${selectedBranch === b ? 'bg-teal-500 text-slate-900 shadow-lg shadow-teal-500/20' : 'bg-slate-900 border border-slate-700 hover:border-teal-500/50'}` }, b))))),
+                React.createElement("div", { className: "bg-slate-900 p-4 rounded-2xl border-2 border-slate-800 space-y-4" },
+                    layoutMode === '2POP' && (React.createElement("div", { className: "text-center font-black tracking-widest text-teal-500 border-b border-slate-700 pb-2 mb-2" }, "ITEM 1 (ATAS)")),
+                    React.createElement("div", { className: "space-y-3" },
+                        React.createElement("div", { className: "flex justify-between items-center mb-1" },
+                            React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider block" }, "1. Nama Produk"),
+                            layoutMode === '1POP' && (React.createElement("div", { className: "flex gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800" },
+                                React.createElement("button", { onClick: () => { setTitleAlign('left'); setRenderTrigger(p => p + 1); }, className: `p-1 rounded ${titleAlign === 'left' ? 'bg-teal-500 text-slate-900' : 'text-slate-500 hover:text-teal-300'}`, title: "Rata Kiri" },
+                                    React.createElement(AlignLeft, { size: 12 })),
+                                React.createElement("button", { onClick: () => { setTitleAlign('center'); setRenderTrigger(p => p + 1); }, className: `p-1 rounded ${titleAlign === 'center' ? 'bg-teal-500 text-slate-900' : 'text-slate-500 hover:text-teal-300'}`, title: "Rata Tengah" },
+                                    React.createElement(AlignCenter, { size: 12 })),
+                                React.createElement("button", { onClick: () => { setTitleAlign('right'); setRenderTrigger(p => p + 1); }, className: `p-1 rounded ${titleAlign === 'right' ? 'bg-teal-500 text-slate-900' : 'text-slate-500 hover:text-teal-300'}`, title: "Rata Kanan" },
+                                    React.createElement(AlignRight, { size: 12 })),
+                                React.createElement("button", { onClick: () => { setTitleAlign('justify'); setRenderTrigger(p => p + 1); }, className: `p-1 rounded ${titleAlign === 'justify' ? 'bg-teal-500 text-slate-900' : 'text-slate-500 hover:text-teal-300'}`, title: "Justify (Bebas Spasi)" },
+                                    React.createElement(AlignJustify, { size: 12 }))))),
+                        React.createElement("input", { type: "text", value: productName, onChange: (e) => { setProductName(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-sm focus:ring-2 focus:ring-teal-500 outline-none transition-all font-semibold" }),
+                        React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider block mt-2" }, "Catatan Gambar Ekstra"),
+                        React.createElement("div", { className: "flex gap-2" },
+                            React.createElement("input", { type: "text", value: customImagePrompt, onChange: (e) => setCustomImagePrompt(e.target.value), className: "flex-1 bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs outline-none", placeholder: "Cth: udang ukuran besar..." }),
+                            React.createElement("button", { onClick: () => generateProductImage(1), disabled: loadingMsg !== '', className: "bg-purple-600 hover:bg-purple-500 px-3 rounded-lg text-white" },
+                                React.createElement(RefreshCw, { size: 14 })))),
+                    React.createElement("div", { className: "bg-slate-800/30 p-3 rounded-xl border border-slate-700/50 space-y-3" },
+                        React.createElement("label", { className: "text-[10px] font-bold text-slate-400 flex items-center gap-1" },
+                            React.createElement(ImageIcon, { size: 12 }),
+                            " 2. Sumber Gambar"),
+                        React.createElement("div", { className: "flex gap-2" },
+                            React.createElement("button", { onClick: () => generateAllAiContent(1), disabled: loadingMsg !== '', className: "flex-1 py-3 rounded-xl font-bold text-white text-xs bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 shadow-lg flex justify-center items-center gap-2" },
+                                React.createElement(Wand2, { size: 14 }),
+                                " AI"),
+                            React.createElement("button", { onClick: () => fileInputRef.current?.click(), className: "flex-1 py-3 rounded-xl font-bold text-slate-300 text-xs bg-slate-700 hover:bg-slate-600 border border-slate-600 flex justify-center items-center gap-2" },
+                                React.createElement(Upload, { size: 14 }),
+                                " Manual"),
+                            React.createElement("input", { type: "file", ref: fileInputRef, className: "hidden", accept: "image/*", onChange: (e) => handleImageUpload(e, 1) })),
+                        rawProductImg && (!isManualUpload || aiExtractionFailed) && (React.createElement("div", { className: "pt-2 border-t border-slate-700/50 mt-2" },
+                            React.createElement("label", { className: "text-[10px] font-bold text-slate-400 flex items-center justify-between" },
+                                React.createElement("span", { className: "flex items-center gap-1" },
+                                    React.createElement(SlidersHorizontal, { size: 12 }),
+                                    " Toleransi Hapus Latar"),
+                                React.createElement("span", { className: "text-teal-400" }, bgTolerance)),
+                            React.createElement("input", { type: "range", min: "0", max: "150", value: bgTolerance, onChange: (e) => setBgTolerance(parseInt(e.target.value)), className: "w-full accent-teal-500 mt-2" })))),
+                    React.createElement("div", { className: "space-y-4" },
+                        React.createElement("div", { className: "flex justify-between items-center" },
+                            React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider" }, "3. Harga & Info"),
+                            React.createElement("label", { className: "text-[10px] flex items-center gap-1 cursor-pointer font-bold" },
+                                React.createElement("input", { type: "checkbox", checked: isPromo, onChange: (e) => { setIsPromo(e.target.checked); setRenderTrigger(p => p + 1); }, className: "accent-teal-500" }),
+                                " Harga Coret")),
+                        React.createElement("div", { className: "grid grid-cols-2 gap-3" },
+                            React.createElement("div", null,
+                                React.createElement("label", { className: "text-[9px] font-bold text-slate-500 uppercase block mb-1" }, "Harga Promo"),
+                                React.createElement("input", { type: "text", value: promoPrice, onChange: (e) => { setPromoPrice(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm font-bold text-teal-400 outline-none" })),
+                            isPromo && (React.createElement("div", null,
+                                React.createElement("label", { className: "text-[9px] font-bold text-slate-500 uppercase block mb-1" }, "Harga Coret"),
+                                React.createElement("input", { type: "text", value: normalPrice, onChange: (e) => { setNormalPrice(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm font-bold text-red-400 outline-none" })))),
+                        React.createElement("div", { className: "grid grid-cols-2 gap-3" },
+                            React.createElement("div", null,
+                                React.createElement("label", { className: "text-[9px] font-bold text-slate-500 uppercase block mb-1" }, "Satuan (Unit)"),
+                                React.createElement("input", { type: "text", value: unit, onChange: (e) => { setUnit(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-xs outline-none" })),
+                            layoutMode === '1POP' && (React.createElement("div", null,
+                                React.createElement("label", { className: "text-[9px] font-bold text-slate-500 uppercase block mb-1" }, "Periode"),
+                                React.createElement("textarea", { rows: "2", value: period, onChange: (e) => { setPeriod(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs outline-none resize-none" })))))),
+                layoutMode === '2POP' && (React.createElement("div", { className: "bg-slate-900 p-4 rounded-2xl border-2 border-slate-800 space-y-4" },
+                    React.createElement("div", { className: "text-center font-black tracking-widest text-emerald-500 border-b border-slate-700 pb-2 mb-2" }, "ITEM 2 (BAWAH)"),
+                    React.createElement("div", { className: "space-y-3" },
+                        React.createElement("div", { className: "flex justify-between items-center mb-1" },
+                            React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider block" }, "1. Nama Produk 2")),
+                        React.createElement("input", { type: "text", value: productName2, onChange: (e) => { setProductName2(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all font-semibold" }),
+                        React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider block mt-2" }, "Catatan Gambar Ekstra"),
+                        React.createElement("div", { className: "flex gap-2" },
+                            React.createElement("input", { type: "text", value: customImagePrompt2, onChange: (e) => setCustomImagePrompt2(e.target.value), className: "flex-1 bg-slate-800 border border-slate-700 rounded-lg p-2 text-xs outline-none", placeholder: "Cth: udang ukuran besar..." }),
+                            React.createElement("button", { onClick: () => generateProductImage(2), disabled: loadingMsg !== '', className: "bg-purple-600 hover:bg-purple-500 px-3 rounded-lg text-white" },
+                                React.createElement(RefreshCw, { size: 14 })))),
+                    React.createElement("div", { className: "bg-slate-800/30 p-3 rounded-xl border border-slate-700/50 space-y-3" },
+                        React.createElement("label", { className: "text-[10px] font-bold text-slate-400 flex items-center gap-1" },
+                            React.createElement(ImageIcon, { size: 12 }),
+                            " 2. Sumber Gambar 2"),
+                        React.createElement("div", { className: "flex gap-2" },
+                            React.createElement("button", { onClick: () => generateAllAiContent(2), disabled: loadingMsg !== '', className: "flex-1 py-3 rounded-xl font-bold text-white text-xs bg-gradient-to-r from-emerald-600 to-green-500 hover:from-emerald-500 hover:to-green-400 shadow-lg flex justify-center items-center gap-2" },
+                                React.createElement(Wand2, { size: 14 }),
+                                " AI"),
+                            React.createElement("button", { onClick: () => fileInputRef2.current?.click(), className: "flex-1 py-3 rounded-xl font-bold text-slate-300 text-xs bg-slate-700 hover:bg-slate-600 border border-slate-600 flex justify-center items-center gap-2" },
+                                React.createElement(Upload, { size: 14 }),
+                                " Manual"),
+                            React.createElement("input", { type: "file", ref: fileInputRef2, className: "hidden", accept: "image/*", onChange: (e) => handleImageUpload(e, 2) })),
+                        rawProductImg2 && (!isManualUpload2 || aiExtractionFailed2) && (React.createElement("div", { className: "pt-2 border-t border-slate-700/50 mt-2" },
+                            React.createElement("label", { className: "text-[10px] font-bold text-slate-400 flex items-center justify-between" },
+                                React.createElement("span", { className: "flex items-center gap-1" },
+                                    React.createElement(SlidersHorizontal, { size: 12 }),
+                                    " Toleransi Hapus Latar"),
+                                React.createElement("span", { className: "text-emerald-400" }, bgTolerance2)),
+                            React.createElement("input", { type: "range", min: "0", max: "150", value: bgTolerance2, onChange: (e) => setBgTolerance2(parseInt(e.target.value)), className: "w-full accent-emerald-500 mt-2" })))),
+                    React.createElement("div", { className: "space-y-4" },
+                        React.createElement("div", { className: "flex justify-between items-center" },
+                            React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider" }, "3. Harga & Info 2"),
+                            React.createElement("label", { className: "text-[10px] flex items-center gap-1 cursor-pointer font-bold" },
+                                React.createElement("input", { type: "checkbox", checked: isPromo2, onChange: (e) => { setIsPromo2(e.target.checked); setRenderTrigger(p => p + 1); }, className: "accent-emerald-500" }),
+                                " Harga Coret")),
+                        React.createElement("div", { className: "grid grid-cols-2 gap-3" },
+                            React.createElement("div", null,
+                                React.createElement("label", { className: "text-[9px] font-bold text-slate-500 uppercase block mb-1" }, "Harga Promo"),
+                                React.createElement("input", { type: "text", value: promoPrice2, onChange: (e) => { setPromoPrice2(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm font-bold text-emerald-400 outline-none" })),
+                            isPromo2 && (React.createElement("div", null,
+                                React.createElement("label", { className: "text-[9px] font-bold text-slate-500 uppercase block mb-1" }, "Harga Coret"),
+                                React.createElement("input", { type: "text", value: normalPrice2, onChange: (e) => { setNormalPrice2(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-sm font-bold text-red-400 outline-none" })))),
+                        React.createElement("div", null,
+                            React.createElement("label", { className: "text-[9px] font-bold text-slate-500 uppercase block mb-1" }, "Satuan (Unit)"),
+                            React.createElement("input", { type: "text", value: unit2, onChange: (e) => { setUnit2(e.target.value); setRenderTrigger(p => p + 1); }, className: "w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-xs outline-none" }))))),
+                layoutMode === '1POP' && (React.createElement("div", { className: "bg-slate-800/50 p-4 rounded-xl border border-slate-700/50" },
+                    React.createElement("label", { className: "text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 block" }, "Badge Tambahan (Opsional)"),
+                    React.createElement("input", { type: "text", value: badgeText, onChange: (e) => { setBadgeText(e.target.value.toUpperCase()); setRenderTrigger(p => p + 1); }, placeholder: "Kosongkan jika tidak perlu...", className: "w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs mb-3 outline-none" }),
+                    React.createElement("div", { className: "flex gap-2 mb-3" }, ['#d97706', '#b91c1c', '#1d4ed8', '#15803d', '#1e293b'].map(color => (React.createElement("button", { key: color, onClick: () => { setBadgeColor(color); setRenderTrigger(p => p + 1); }, className: "w-6 h-6 rounded-full border-2 border-slate-700", style: { backgroundColor: color, borderColor: badgeColor === color ? 'white' : 'transparent' } })))),
+                    badgeText && (React.createElement("div", { className: "pt-2 border-t border-slate-700/50" },
+                        React.createElement("label", { className: "text-[10px] font-bold text-slate-400 flex items-center justify-between mb-2" },
+                            React.createElement("span", null, "Zoom Teks Saja"),
+                            React.createElement("span", { className: "text-teal-400" },
+                                Math.round(badgeTextScale * 100),
+                                "%")),
+                        React.createElement("input", { type: "range", min: "0.5", max: "2.5", step: "0.1", value: badgeTextScale, onChange: (e) => { setBadgeTextScale(parseFloat(e.target.value)); setRenderTrigger(p => p + 1); }, className: "w-full accent-amber-500" }))))),
+                errorMsg && (React.createElement("div", { className: "mt-3 p-3 bg-red-900/40 border border-red-500/50 rounded-lg text-red-200 text-[10px] font-bold flex items-start gap-2" },
+                    React.createElement("span", { className: "text-sm mt-0.5" }, "\u26A0\uFE0F"),
+                    React.createElement("span", null, errorMsg)))),
+            React.createElement("div", { className: `p-5 mt-auto border-t border-slate-800 bg-slate-900 sticky bottom-0 z-50 ${isMobileFullscreen ? 'hidden md:block' : 'block'}` },
+                React.createElement("button", { onClick: () => {
+                        if (!canvasRef.current)
+                            return;
+                        setLoadingMsg('Memproses Export 8K...');
+                        // MENGHILANGKAN KOTAK SELEKSI SEBELUM EXPORT AGAR BERSIH
+                        const currentActive = activeElement;
+                        setActiveElement(null);
+                        setRenderTrigger(p => p + 1);
+                        // Beri jeda sejenak agar React selesai menghilangkan garis hijau dari Canvas
+                        setTimeout(() => {
+                            try {
+                                canvasRef.current.toBlob((blob) => {
+                                    if (blob) {
+                                        const url = URL.createObjectURL(blob);
+                                        const link = document.createElement('a');
+                                        link.download = `POP_8K_${selectedBranch}_${layoutMode}_${productName.replace(/\s+/g, '_')}.png`;
+                                        link.href = url;
+                                        document.body.appendChild(link);
+                                        link.click();
+                                        document.body.removeChild(link);
+                                        URL.revokeObjectURL(url);
+                                    }
+                                    else {
+                                        setErrorMsg("Gagal memproses gambar. Memori perangkat penuh.");
+                                    }
+                                    setLoadingMsg('');
+                                    if (currentActive)
+                                        setActiveElement(currentActive); // Kembalikan seleksi
+                                }, 'image/png', 1.0);
+                            }
+                            catch (e) {
+                                console.error("Export error:", e);
+                                setErrorMsg("Gagal export. Terkendala sistem keamanan peramban.");
+                                setLoadingMsg('');
+                                if (currentActive)
+                                    setActiveElement(currentActive); // Kembalikan seleksi
+                            }
+                        }, 150);
+                    }, disabled: loadingMsg !== '', className: "w-full py-4 rounded-xl font-black text-slate-900 bg-emerald-400 hover:bg-emerald-300 shadow-lg shadow-emerald-500/25 flex justify-center items-center gap-2 transition-all uppercase tracking-wider disabled:opacity-50" },
+                    React.createElement(Download, { size: 18 }),
+                    " Export 8K Resolution"))),
+        React.createElement("div", { className: `bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] bg-slate-950 overflow-hidden flex justify-center items-center transition-all duration-300 ${isMobileFullscreen ? 'absolute inset-0 z-50 w-full h-[100dvh]' : 'flex-1 relative h-[45dvh] md:h-full'}`, ref: containerRef },
+            loadingMsg && (React.createElement("div", { className: "absolute inset-0 z-50 bg-slate-900/80 backdrop-blur-md flex flex-col justify-center items-center text-center p-8" },
+                React.createElement(Loader2, { className: "animate-spin text-emerald-400 mb-6", size: 56 }),
+                React.createElement("p", { className: "text-2xl font-black tracking-widest text-emerald-300 animate-pulse" }, loadingMsg),
+                loadingMsg.includes('butuh') && React.createElement("p", { className: "text-sm mt-4 text-emerald-100 font-bold opacity-75" }, "Harap jangan tutup halaman ini saat AI sedang memotong gambar."))),
+            React.createElement("button", { onClick: () => {
+                    setIsMobileFullscreen(prev => !prev);
+                    setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+                }, className: "absolute top-2 right-2 md:hidden z-40 bg-slate-900/90 backdrop-blur p-2 rounded-full border border-slate-700/50 shadow-xl text-teal-400 active:bg-slate-800" }, isMobileFullscreen ? React.createElement(Minimize, { size: 18 }) : React.createElement(Maximize, { size: 18 })),
+            React.createElement("div", { className: "absolute top-2 left-2 md:top-6 md:left-auto flex gap-2 md:gap-4 z-20 bg-slate-900/90 backdrop-blur px-4 md:px-8 py-2 md:py-3 rounded-full border border-slate-700/50 shadow-2xl scale-90 md:scale-100 origin-top-left md:origin-top" },
+                React.createElement("span", { className: "flex items-center gap-1 md:gap-2 text-[10px] md:text-xs font-bold text-emerald-300" },
+                    React.createElement(Move, { size: 14 }),
+                    " Geser"),
+                React.createElement("span", { className: "text-slate-600" }, "\u2022"),
+                React.createElement("span", { className: "flex items-center gap-1 md:gap-2 text-[10px] md:text-xs font-bold text-pink-300" },
+                    React.createElement(ZoomIn, { size: 14 }),
+                    " Scroll/Zoom")),
+            activeElement && (React.createElement("div", { className: "absolute z-50 bg-slate-900/95 backdrop-blur-xl rounded-[2rem] border border-teal-500/50 shadow-[0_10px_40px_rgba(0,0,0,0.8)] flex flex-col overflow-hidden", style: { left: panelPos.x, top: panelPos.y, touchAction: 'none' } },
+                React.createElement("div", { className: "w-full bg-slate-800/80 py-1.5 flex justify-center items-center cursor-grab active:cursor-grabbing border-b border-slate-700 touch-none", onPointerDown: handlePanelDragStart },
+                    React.createElement(GripHorizontal, { size: 20, className: "text-slate-500" })),
+                React.createElement("div", { className: "flex flex-col md:flex-row items-center gap-3 px-5 py-3 scale-90 md:scale-100" },
+                    React.createElement("div", { className: "flex flex-col justify-center items-center md:items-start w-full md:w-auto" },
+                        React.createElement("span", { className: "text-[10px] md:text-xs font-black text-teal-400 uppercase tracking-widest md:mr-4" },
+                            "EDIT: ",
+                            activeElement),
+                        React.createElement("div", { className: "text-[10px] md:text-xs text-teal-100/80 font-mono font-bold mt-1.5 tracking-wider bg-slate-950/80 px-2.5 py-1 rounded-lg border border-teal-900/50 shadow-inner" },
+                            "X:",
+                            React.createElement("span", { className: "text-teal-400" }, Math.round(elements[activeElement].x)),
+                            " Y:",
+                            React.createElement("span", { className: "text-teal-400" }, Math.round(elements[activeElement].y)),
+                            " S:",
+                            React.createElement("span", { className: "text-pink-400" }, elements[activeElement].scale.toFixed(2)))),
+                    React.createElement("div", { className: "flex items-center gap-4 mt-2 md:mt-0" },
+                        React.createElement("div", { className: "flex gap-1 bg-slate-800 p-1.5 rounded-2xl border border-slate-700" },
+                            React.createElement("button", { className: "w-10 h-10 md:w-11 md:h-11 rounded-xl hover:bg-teal-600 active:bg-teal-500 flex justify-center items-center font-bold text-2xl bg-slate-700 text-white transition-colors", onClick: () => zoomActiveElement(0.95) }, "-"),
+                            React.createElement("button", { className: "w-10 h-10 md:w-11 md:h-11 rounded-xl hover:bg-teal-600 active:bg-teal-500 flex justify-center items-center font-bold text-2xl bg-slate-700 text-white transition-colors", onClick: () => zoomActiveElement(1.05) }, "+")),
+                        React.createElement("div", { className: "flex gap-1 bg-slate-800 p-1.5 rounded-2xl border border-slate-700" },
+                            React.createElement("button", { onClick: () => moveActiveElement(0, -15), className: "w-10 h-10 md:w-11 md:h-11 bg-slate-700 rounded-xl flex items-center justify-center hover:bg-teal-600 active:bg-teal-500 text-white transition-colors" },
+                                React.createElement(ChevronUp, { size: 20 })),
+                            React.createElement("button", { onClick: () => moveActiveElement(0, 15), className: "w-10 h-10 md:w-11 md:h-11 bg-slate-700 rounded-xl flex items-center justify-center hover:bg-teal-600 active:bg-teal-500 text-white transition-colors" },
+                                React.createElement(ChevronDown, { size: 20 })),
+                            React.createElement("button", { onClick: () => moveActiveElement(-15, 0), className: "w-10 h-10 md:w-11 md:h-11 bg-slate-700 rounded-xl flex items-center justify-center hover:bg-teal-600 active:bg-teal-500 text-white transition-colors" },
+                                React.createElement(ChevronLeft, { size: 20 })),
+                            React.createElement("button", { onClick: () => moveActiveElement(15, 0), className: "w-10 h-10 md:w-11 md:h-11 bg-slate-700 rounded-xl flex items-center justify-center hover:bg-teal-600 active:bg-teal-500 text-white transition-colors" },
+                                React.createElement(ChevronRight, { size: 20 }))),
+                        React.createElement("button", { onClick: () => setActiveElement(null), className: "w-11 h-11 bg-red-900/40 border border-red-500/50 text-red-400 flex justify-center items-center rounded-2xl hover:bg-red-500 hover:text-white transition-colors" },
+                            React.createElement(X, { size: 20 })))))),
+            React.createElement("div", { className: "relative w-full h-[85%] md:h-[90%] max-w-full flex justify-center items-center p-4" },
+                React.createElement("canvas", { ref: canvasRef, width: LOGICAL_WIDTH * RENDER_SCALE, height: LOGICAL_HEIGHT * RENDER_SCALE, onPointerDown: handlePointerDown, onPointerMove: handlePointerMove, onPointerUp: handlePointerUp, onPointerLeave: handlePointerUp, className: "rounded-lg shadow-[0_0_50px_rgba(0,0,0,0.5)] touch-none max-w-full max-h-full object-contain", style: { touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', aspectRatio: `${LOGICAL_WIDTH} / ${LOGICAL_HEIGHT}` } })))));
+}
+import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
+createRoot(document.getElementById('root')).render(React.createElement(App));
+
+  </script>
+</body>
+</html>
